@@ -41,6 +41,8 @@ DEFAULT_PORT = 80
 CONF_VOLUME_UP = 'volume_up'
 CONF_VOLUME_DOWN = 'volume_down'
 CONF_VOLUME_MUTE = 'volume_mute'
+CONF_VOLUME_MUTE_ON = 'volume_mute_on'
+CONF_VOLUME_MUTE_OFF = 'volume_mute_off'
 CONF_NEXT_TRACK = 'next_track'
 CONF_PREVIOUS_TRACK = 'previous_track'
 CONF_SOURCES = 'sources'
@@ -51,19 +53,6 @@ CONF_SOUND_MODES = 'sound_modes'
 
 _LOGGER = logging.getLogger(__name__)
 
-DIGITS_SCHEMA = vol.Schema({
-    vol.Required('0'): cv.string,
-    vol.Required('1'): cv.string,
-    vol.Required('2'): cv.string,
-    vol.Required('3'): cv.string,
-    vol.Required('4'): cv.string,
-    vol.Required('5'): cv.string,
-    vol.Required('6'): cv.string,
-    vol.Required('7'): cv.string,
-    vol.Required('8'): cv.string,
-    vol.Required('9'): cv.string,
-})
-
 
 def convert_list_to_hex(data):
     if len(data) != 4:
@@ -73,12 +62,31 @@ def convert_list_to_hex(data):
     raw = irgen.gen_raw_general(*data)
     res = irgen.gen_broadlink_base64_from_raw(raw)
     _LOGGER.debug("%s converted to: %s", data, res)
+    return res
 
 
 CODE_SCHEMA = vol.Schema(vol.Any(
-    convert_list_to_hex,
+    vol.All(
+        list,
+        convert_list_to_hex,
+    ),
     cv.string,
 ))
+
+DIGITS_SCHEMA = vol.Schema({
+    vol.Required('0'): CODE_SCHEMA,
+    vol.Required('1'): CODE_SCHEMA,
+    vol.Required('2'): CODE_SCHEMA,
+    vol.Required('3'): CODE_SCHEMA,
+    vol.Required('4'): CODE_SCHEMA,
+    vol.Required('5'): CODE_SCHEMA,
+    vol.Required('6'): CODE_SCHEMA,
+    vol.Required('7'): CODE_SCHEMA,
+    vol.Required('8'): CODE_SCHEMA,
+    vol.Required('9'): CODE_SCHEMA,
+})
+
+ENTRY_SCHEMA = vol.Schema({str: CODE_SCHEMA})
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Required(CONF_HOST): cv.string,
@@ -89,14 +97,16 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 
     vol.Optional(CONF_DIGITDELAY, default=DEFAULT_DELAY): float,
     vol.Optional(CONF_COMMAND_ON): CODE_SCHEMA,
-    vol.Optional(CONF_COMMAND_OFF): cv.string,
-    vol.Optional(CONF_VOLUME_UP): cv.string,
-    vol.Optional(CONF_VOLUME_DOWN): cv.string,
-    vol.Optional(CONF_VOLUME_MUTE): cv.string,
-    vol.Optional(CONF_NEXT_TRACK): cv.string,
-    vol.Optional(CONF_PREVIOUS_TRACK): cv.string,
-    vol.Optional(CONF_SOURCES, default={}): dict,
-    vol.Optional(CONF_SOUND_MODES, default={}): dict,
+    vol.Optional(CONF_COMMAND_OFF): CODE_SCHEMA,
+    vol.Optional(CONF_VOLUME_UP): CODE_SCHEMA,
+    vol.Optional(CONF_VOLUME_DOWN): CODE_SCHEMA,
+    vol.Optional(CONF_VOLUME_MUTE): CODE_SCHEMA,
+    vol.Optional(CONF_VOLUME_MUTE_ON): CODE_SCHEMA,
+    vol.Optional(CONF_VOLUME_MUTE_OFF): CODE_SCHEMA,
+    vol.Optional(CONF_NEXT_TRACK): CODE_SCHEMA,
+    vol.Optional(CONF_PREVIOUS_TRACK): CODE_SCHEMA,
+    vol.Optional(CONF_SOURCES, default={}): ENTRY_SCHEMA,
+    vol.Optional(CONF_SOUND_MODES, default={}): ENTRY_SCHEMA,
     vol.Optional(CONF_DIGITS): DIGITS_SCHEMA,
 })
 
@@ -174,6 +184,7 @@ class BroadlinkRM(MediaPlayerDevice):
         self._state = STATE_OFF
         self._source = None
         self._sound_mode = None
+        self._muted = None
 
     async def send(self, command):
         """Send b64 encoded command to device."""
@@ -218,7 +229,14 @@ class BroadlinkRM(MediaPlayerDevice):
 
     async def async_mute_volume(self, mute):
         """Send mute command."""
-        await self.send(self._config.get(CONF_VOLUME_MUTE))
+        if mute and CONF_VOLUME_MUTE_ON in self._config:
+            await self.send(self._config.get(CONF_VOLUME_MUTE_ON))
+            self._muted = True
+        elif not mute and CONF_VOLUME_MUTE_OFF in self._config:
+            await self.send(self._config.get(CONF_VOLUME_MUTE_OFF))
+            self._muted = False
+        else:
+            await self.send(self._config.get(CONF_VOLUME_MUTE))
 
     async def async_media_next_track(self):
         """Send next track command."""
@@ -274,3 +292,8 @@ class BroadlinkRM(MediaPlayerDevice):
     def sound_mode_list(self):
         """List of available sound modes."""
         return list(self._config.get(CONF_SOUND_MODES).keys())
+
+    @property
+    def is_volume_muted(self):
+        """Boolean if volume is currently muted."""
+        return self._muted
