@@ -221,54 +221,65 @@ class BroadlinkRM(MediaPlayerDevice):
 
     async def async_turn_on(self):
         """Turn on media player."""
-        await self.send(self._config.get(CONF_COMMAND_ON))
-        self._state = STATE_ON
+        async with self._lock:
+            await self.send(self._config.get(CONF_COMMAND_ON))
+            self._state = STATE_ON
 
     async def async_turn_off(self):
         """Turn off media player."""
-        await self.send(self._config.get(CONF_COMMAND_OFF))
-        self._state = STATE_OFF
+        async with self._lock:
+            await self.send(self._config.get(CONF_COMMAND_OFF))
+            self._state = STATE_OFF
 
     async def async_volume_up(self):
         """Volume up media player."""
-        await self.send(self._config.get(CONF_VOLUME_UP))
-        if CONF_VOLUME_STEP in self._config and self._volume_level is not None:
-            self._volume_level += self._config.get(CONF_VOLUME_STEP)
+        async with self._lock:
+            await self.send(self._config.get(CONF_VOLUME_UP))
+            if CONF_VOLUME_STEP in self._config and \
+               self._volume_level is not None:
+                self._volume_level += self._config.get(CONF_VOLUME_STEP)
 
     async def async_volume_down(self):
         """Volume down media player."""
-        await self.send(self._config.get(CONF_VOLUME_DOWN))
-        if CONF_VOLUME_STEP in self._config and self._volume_level is not None:
-            self._volume_level -= self._config.get(CONF_VOLUME_STEP)
+        async with self._lock:
+            await self.send(self._config.get(CONF_VOLUME_DOWN))
+            if CONF_VOLUME_STEP in self._config and \
+               self._volume_level is not None:
+                self._volume_level -= self._config.get(CONF_VOLUME_STEP)
 
     async def async_mute_volume(self, mute):
         """Send mute command."""
-        if mute and CONF_VOLUME_MUTE_ON in self._config:
-            await self.send(self._config.get(CONF_VOLUME_MUTE_ON))
-            self._muted = True
-        elif not mute and CONF_VOLUME_MUTE_OFF in self._config:
-            await self.send(self._config.get(CONF_VOLUME_MUTE_OFF))
-            self._muted = False
-        else:
-            await self.send(self._config.get(CONF_VOLUME_MUTE))
+        async with self._lock:
+            if mute and CONF_VOLUME_MUTE_ON in self._config:
+                await self.send(self._config.get(CONF_VOLUME_MUTE_ON))
+                self._muted = True
+            elif not mute and CONF_VOLUME_MUTE_OFF in self._config:
+                await self.send(self._config.get(CONF_VOLUME_MUTE_OFF))
+                self._muted = False
+            else:
+                await self.send(self._config.get(CONF_VOLUME_MUTE))
 
     async def async_media_next_track(self):
         """Send next track command."""
-        await self.send(self._config.get(CONF_NEXT_TRACK))
+        async with self._lock:
+            await self.send(self._config.get(CONF_NEXT_TRACK))
 
     async def async_media_previous_track(self):
         """Send the previous track command."""
-        await self.send(self._config.get(CONF_PREVIOUS_TRACK))
+        async with self._lock:
+            await self.send(self._config.get(CONF_PREVIOUS_TRACK))
 
     async def async_select_source(self, source):
         """Select a specific source."""
-        await self.send(self._config.get(CONF_SOURCES)[source])
-        self._source = source
+        async with self._lock:
+            await self.send(self._config.get(CONF_SOURCES)[source])
+            self._source = source
 
     async def async_select_sound_mode(self, sound_mode):
         """Select a specific source."""
-        await self.send(self._config.get(CONF_SOUND_MODES)[sound_mode])
-        self._sound_mode = sound_mode
+        async with self._lock:
+            await self.send(self._config.get(CONF_SOUND_MODES)[sound_mode])
+            self._sound_mode = sound_mode
 
     async def async_play_media(self, media_type, media_id, **kwargs):
         """Switch to a specific channel."""
