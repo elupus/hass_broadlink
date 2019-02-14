@@ -20,7 +20,7 @@ from homeassistant.components.media_player.const import (
     MEDIA_TYPE_CHANNEL, SUPPORT_NEXT_TRACK,
     SUPPORT_PLAY_MEDIA, SUPPORT_PREVIOUS_TRACK, SUPPORT_SELECT_SOURCE,
     SUPPORT_TURN_OFF, SUPPORT_TURN_ON, SUPPORT_VOLUME_MUTE,
-    SUPPORT_VOLUME_STEP, SUPPORT_SELECT_SOUND_MODE)
+    SUPPORT_VOLUME_STEP, SUPPORT_VOLUME_SET, SUPPORT_SELECT_SOUND_MODE)
 from homeassistant.const import (
     CONF_COMMAND_OFF, CONF_COMMAND_ON, CONF_HOST, CONF_MAC, CONF_NAME,
     CONF_PORT, CONF_TIMEOUT, STATE_OFF, STATE_ON)
@@ -50,6 +50,8 @@ CONF_CHANNELS = 'channels'
 CONF_DIGITS = 'digits'
 CONF_DIGITDELAY = 'digitdelay'
 CONF_SOUND_MODES = 'sound_modes'
+CONF_VOLUME_LEVELS = 'volume_levels'
+CONF_VOLUME_STEP = 'volume_step'
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -87,6 +89,7 @@ DIGITS_SCHEMA = vol.Schema({
 })
 
 ENTRY_SCHEMA = vol.Schema({str: CODE_SCHEMA})
+VOLUME_LEVELS_SCHEMA = vol.Schema({float: CODE_SCHEMA})
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Required(CONF_HOST): cv.string,
@@ -108,6 +111,8 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_SOURCES, default={}): ENTRY_SCHEMA,
     vol.Optional(CONF_SOUND_MODES, default={}): ENTRY_SCHEMA,
     vol.Optional(CONF_DIGITS): DIGITS_SCHEMA,
+    vol.Optional(CONF_VOLUME_LEVELS): VOLUME_LEVELS_SCHEMA,
+    vol.Optional(CONF_VOLUME_STEP): float,
 })
 
 SUPPORT_MAPPING = [
@@ -163,6 +168,9 @@ def get_supported_by_config(config):
     if config.get(CONF_DIGITS):
         support = support | SUPPORT_PLAY_MEDIA
 
+    if config.get(CONF_VOLUME_LEVELS) and config.get(CONF_VOLUME_STEP):
+        support = support | SUPPORT_VOLUME_SET
+
     return support
 
 
@@ -185,6 +193,8 @@ class BroadlinkRM(MediaPlayerDevice):
         self._source = None
         self._sound_mode = None
         self._muted = None
+        self._volume_level = None
+        self._lock = asyncio.Lock()
 
     async def send(self, command):
         """Send b64 encoded command to device."""
@@ -222,10 +232,14 @@ class BroadlinkRM(MediaPlayerDevice):
     async def async_volume_up(self):
         """Volume up media player."""
         await self.send(self._config.get(CONF_VOLUME_UP))
+        if CONF_VOLUME_STEP in self._config and self._volume_level is not None:
+            self._volume_level += self._config.get(CONF_VOLUME_STEP)
 
     async def async_volume_down(self):
         """Volume down media player."""
         await self.send(self._config.get(CONF_VOLUME_DOWN))
+        if CONF_VOLUME_STEP in self._config and self._volume_level is not None:
+            self._volume_level -= self._config.get(CONF_VOLUME_STEP)
 
     async def async_mute_volume(self, mute):
         """Send mute command."""
@@ -263,10 +277,45 @@ class BroadlinkRM(MediaPlayerDevice):
             return
 
         cv.positive_int(media_id)
+        async with self._lock:
+            for digit in media_id:
+                await self.send(self._config.get(CONF_DIGITS).get(digit))
+                await asyncio.sleep(self._config.get(CONF_DIGITDELAY))
 
-        for digit in media_id:
-            await self.send(self._config.get(CONF_DIGITS).get(digit))
-            await asyncio.sleep(self._config.get(CONF_DIGITDELAY))
+    async def async_set_volume_level(self, volume):
+        """Set volume level, range 0..1."""
+        if CONF_VOLUME_LEVELS not in self._config:
+            raise NotImplementedError()
+
+        async with self._lock:
+            base_level = self._volume_level
+            base_code = None
+
+            for level, code in self._config[CONF_VOLUME_LEVELS].items():
+                if base_level is None or \
+                   abs(base_level - volume) > abs(level - volume):
+                    base_level = level
+                    base_code = code
+
+            volume_step = self._config.get(CONF_VOLUME_STEP)
+            delay = self._config.get(CONF_DIGITDELAY)
+
+            steps = int(round((volume - base_level) / volume_step))
+            if volume > base_level:
+                code = self._config.get(CONF_VOLUME_UP)
+            else:
+                code = self._config.get(CONF_VOLUME_DOWN)
+
+            _LOGGER.debug('Volume base %f target %f steps %f',
+                          base_level, volume, steps)
+
+            if base_code:
+                await self.send(base_code)
+            for step in range(abs(steps)):
+                await asyncio.sleep(delay)
+                await self.send(code)
+
+            self._volume_level = base_level + volume_step * steps
 
     @property
     def media_content_type(self):
@@ -297,3 +346,7 @@ class BroadlinkRM(MediaPlayerDevice):
     def is_volume_muted(self):
         """Boolean if volume is currently muted."""
         return self._muted
+
+    @property
+    def volume_level(self):
+        return self._volume_level
