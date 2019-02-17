@@ -11,6 +11,7 @@ from base64 import b64decode
 import binascii
 import logging
 import socket
+from math import copysign
 from datetime import datetime, timedelta
 
 import voluptuous as vol
@@ -213,6 +214,7 @@ class BroadlinkRM(MediaPlayerDevice):
         self._volume_level = None
         self._lock = asyncio.Lock()
         self._volume_timestamp = datetime.now() + timedelta(seconds=-100)
+        self._volume_calls = 0
 
         if CONF_VOLUME_SET in config:
             volume_set = config[CONF_VOLUME_SET]
@@ -234,6 +236,12 @@ class BroadlinkRM(MediaPlayerDevice):
 
         packet = b64decode(command)
         await self.hass.async_add_job(self._link.send_data, packet)
+
+    async def send_volume(self, code):
+        if await self._volume_timeout():
+            await self.send(code)
+        await self.send(code)
+        self._volume_timestamp = datetime.now()
 
     @property
     def name(self):
@@ -265,12 +273,7 @@ class BroadlinkRM(MediaPlayerDevice):
     async def async_volume_up(self):
         """Volume up media player."""
         async with self._lock:
-            code = self._config.get(CONF_VOLUME_UP)
-            if await self._volume_timeout():
-                await self.send(code)
-
-            await self.send(code)
-            self._volume_timestamp = datetime.now()
+            await self.send_volume(self._config.get(CONF_VOLUME_UP))
 
             if CONF_VOLUME_STEP in self._config and \
                self._volume_level is not None:
@@ -279,12 +282,7 @@ class BroadlinkRM(MediaPlayerDevice):
     async def async_volume_down(self):
         """Volume down media player."""
         async with self._lock:
-            code = self._config.get(CONF_VOLUME_DOWN)
-            if await self._volume_timeout():
-                await self.send(code)
-
-            await self.send(code)
-            self._volume_timestamp = datetime.now()
+            await self.send_volume(self._config.get(CONF_VOLUME_DOWN))
 
             if CONF_VOLUME_STEP in self._config and \
                self._volume_level is not None:
@@ -343,7 +341,12 @@ class BroadlinkRM(MediaPlayerDevice):
 
         config = self._config[CONF_VOLUME_SET]
 
+        self._volume_calls += 1
+        volume_calls = self._volume_calls
+
         async with self._lock:
+            if self._volume_calls != volume_calls:
+                _LOGGER.debug('Aborted volume change early')
 
             def items():
                 if self._volume_level:
@@ -369,17 +372,26 @@ class BroadlinkRM(MediaPlayerDevice):
                           convert_volume_to_device(config, target),
                           steps)
 
+            # lie and say we are at volume, while
+            # changing to keep gui happy
+            self._volume_level = target
+
             if base_code:
                 await self.send(base_code)
 
-            if await self._volume_timeout() and steps:
-                await self.send(code)
-
             for step in range(abs(steps)):
-                await self.send(code)
+                await self.send_volume(code)
+                if self._volume_calls != volume_calls:
+                    _LOGGER.debug('Aborted volume change')
 
-            self._volume_timestamp = datetime.now()
-            self._volume_level = target
+                    # set correct level on abort
+                    self._volume_level = base_level + (
+                        self._volume_step * copysign(step + 1, steps))
+                    break
+
+            _LOGGER.debug('Volume level %f(%f)',
+                          self._volume_level,
+                          convert_volume_to_device(config, self._volume_level))
 
     async def _volume_timeout(self):
         if CONF_VOLUME_TIMEOUT not in self._config[CONF_VOLUME_SET]:
@@ -389,14 +401,15 @@ class BroadlinkRM(MediaPlayerDevice):
         delay = (datetime.now() - self._volume_timestamp).total_seconds()
         remain = timeout - delay
 
-        _LOGGER.debug("Volume timeout remain %f", remain)
         if remain > 0.0:
             if remain < 0.5:
+                _LOGGER.debug("Volume timeout %f", remain)
                 await asyncio.sleep(remain)
                 return True
             else:
                 return False
         else:
+            _LOGGER.debug("Volume timeout %f", remain)
             return True
 
     @property
