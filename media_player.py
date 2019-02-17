@@ -446,3 +446,8 @@ class BroadlinkRM(MediaPlayerDevice):
     @property
     def volume_level(self):
         return self._volume_level
+
+    @property
+    def media_title(self):
+        """Title of current playing media."""
+        return self._source
