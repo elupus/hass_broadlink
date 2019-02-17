@@ -17,6 +17,22 @@ Media player with support for simpler setup of control of a media player. It amo
 generation of IR sequences using a (protocol, device, subdevice, function) tuple as retrieved from 
 https://irdb.tk/.
 
+Installation
+------------
+Install all files in a "hass_broadlink" subdirectory of .homeassistant/custom_components. For example like:
+
+.. code-block:: bash
+    cd .homeassistant
+    mkdir custom_components
+    git clone https://github.com/elupus/hass_broadlink.git
+
+Make sure the component irgen is installed in your python environment running home assistant:
+.. code-block:: bash
+    pip install git+https://github.com/elupus/irgen.git#egg=irgen
+
+Add media_player block to your configuration.
+
+
 Example Configuration
 -------
 
@@ -38,15 +54,26 @@ Example Configuration
         volume_mute_on: [nec1, 126, -1, 162]
         volume_mute_off: [nec1, 126, -1, 163]
 
-        digitdelay: 0.0
+        next_track: [nec1, 122, -1, 16]
+        previous_track: [nec1, 122, -1, 17]
 
+        # To support volume control by sliders, your media_player must be able to change to a fixed volume
+        # with an ir code. For example using some type of state restore.
         volume_set:
           # If player only display volume on first button press. Configure this value
           # to the number of seconds this volume activation remains in effect
           timeout: 3.0
+
+          # Level on device that represent 0% volume
           min: -80.0
+
+          # Level on device that represent 100% volume
           max: 0.0
+
+          # Change in level on device on each volume_up or volume_down
           step: 0.5
+
+          # Ircodes for fixed volume levels. It's enough with a single level for this to work.
           levels:
             -40.0: [nec1, 126, -1, 117]
 
