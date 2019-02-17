@@ -39,9 +39,16 @@ Example Configuration
         volume_mute_off: [nec1, 126, -1, 163]
 
         digitdelay: 0.0
-        volume_step: 0.00625
-        volume_levels:
-          0.5: [nec1, 126, -1, 117]
+
+        volume_set:
+          # If player only display volume on first button press. Configure this value
+          # to the number of seconds this volume activation remains in effect
+          timeout: 3.0
+          min: -80.0
+          max: 0.0
+          step: 0.5
+          levels:
+            -40.0: [nec1, 126, -1, 117]
 
         sources:
           tuner: [nec1, 122 ,-1, 22]

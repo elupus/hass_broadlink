@@ -11,6 +11,7 @@ from base64 import b64decode
 import binascii
 import logging
 import socket
+from datetime import datetime, timedelta
 
 import voluptuous as vol
 
@@ -48,10 +49,13 @@ CONF_PREVIOUS_TRACK = 'previous_track'
 CONF_SOURCES = 'sources'
 CONF_CHANNELS = 'channels'
 CONF_DIGITS = 'digits'
-CONF_DIGITDELAY = 'digitdelay'
 CONF_SOUND_MODES = 'sound_modes'
-CONF_VOLUME_LEVELS = 'volume_levels'
-CONF_VOLUME_STEP = 'volume_step'
+CONF_VOLUME_LEVELS = 'levels'
+CONF_VOLUME_STEP = 'step'
+CONF_VOLUME_MAX = 'max'
+CONF_VOLUME_MIN = 'min'
+CONF_VOLUME_SET = 'volume_set'
+CONF_VOLUME_TIMEOUT = 'timeout'
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,6 +94,13 @@ DIGITS_SCHEMA = vol.Schema({
 
 ENTRY_SCHEMA = vol.Schema({str: CODE_SCHEMA})
 VOLUME_LEVELS_SCHEMA = vol.Schema({float: CODE_SCHEMA})
+VOLUME_SCHEMA_SET = vol.Schema({
+    vol.Required(CONF_VOLUME_MAX): float,
+    vol.Required(CONF_VOLUME_MIN): float,
+    vol.Required(CONF_VOLUME_LEVELS): VOLUME_LEVELS_SCHEMA,
+    vol.Required(CONF_VOLUME_STEP): float,
+    vol.Optional(CONF_VOLUME_TIMEOUT): float,
+})
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Required(CONF_HOST): cv.string,
@@ -98,9 +109,9 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     vol.Optional(CONF_TIMEOUT, default=DEFAULT_TIMEOUT): cv.positive_int,
 
-    vol.Optional(CONF_DIGITDELAY, default=DEFAULT_DELAY): float,
     vol.Optional(CONF_COMMAND_ON): CODE_SCHEMA,
     vol.Optional(CONF_COMMAND_OFF): CODE_SCHEMA,
+    vol.Optional(CONF_VOLUME_SET): VOLUME_SCHEMA_SET,
     vol.Optional(CONF_VOLUME_UP): CODE_SCHEMA,
     vol.Optional(CONF_VOLUME_DOWN): CODE_SCHEMA,
     vol.Optional(CONF_VOLUME_MUTE): CODE_SCHEMA,
@@ -111,8 +122,6 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_SOURCES, default={}): ENTRY_SCHEMA,
     vol.Optional(CONF_SOUND_MODES, default={}): ENTRY_SCHEMA,
     vol.Optional(CONF_DIGITS): DIGITS_SCHEMA,
-    vol.Optional(CONF_VOLUME_LEVELS): VOLUME_LEVELS_SCHEMA,
-    vol.Optional(CONF_VOLUME_STEP): float,
 })
 
 SUPPORT_MAPPING = [
@@ -168,7 +177,7 @@ def get_supported_by_config(config):
     if config.get(CONF_DIGITS):
         support = support | SUPPORT_PLAY_MEDIA
 
-    if config.get(CONF_VOLUME_LEVELS) and config.get(CONF_VOLUME_STEP):
+    if config.get(CONF_VOLUME_SET):
         support = support | SUPPORT_VOLUME_SET
 
     return support
@@ -177,6 +186,14 @@ def get_supported_by_config(config):
 def get_broadlink_mac(mac: str):
     """Convert a mac address string with : in it to just a flat string."""
     return binascii.unhexlify(mac.encode().replace(b':', b''))
+
+
+def convert_volume_to_device(config_volume_set, volume):
+    return (
+        config_volume_set[CONF_VOLUME_MIN] +
+        volume * (config_volume_set[CONF_VOLUME_MAX] -
+                  config_volume_set[CONF_VOLUME_MIN])
+    )
 
 
 class BroadlinkRM(MediaPlayerDevice):
@@ -195,6 +212,20 @@ class BroadlinkRM(MediaPlayerDevice):
         self._muted = None
         self._volume_level = None
         self._lock = asyncio.Lock()
+        self._volume_timestamp = datetime.now() + timedelta(seconds=-100)
+
+        if CONF_VOLUME_SET in config:
+            volume_set = config[CONF_VOLUME_SET]
+            scale  = (volume_set[CONF_VOLUME_MAX] -
+                      volume_set[CONF_VOLUME_MIN])
+            offset = volume_set[CONF_VOLUME_MIN]
+            self._volume_step = volume_set[CONF_VOLUME_STEP] / scale
+            self._volume_levels = {
+                (level - offset) / scale: code
+                for level, code in volume_set[CONF_VOLUME_LEVELS].items()
+            }
+            _LOGGER.debug("Converted step %f, volumes: %s",
+                          self._volume_step, self._volume_levels)
 
     async def send(self, command):
         """Send b64 encoded command to device."""
@@ -234,18 +265,30 @@ class BroadlinkRM(MediaPlayerDevice):
     async def async_volume_up(self):
         """Volume up media player."""
         async with self._lock:
-            await self.send(self._config.get(CONF_VOLUME_UP))
+            code = self._config.get(CONF_VOLUME_UP)
+            if await self._volume_timeout():
+                await self.send(code)
+
+            await self.send(code)
+            self._volume_timestamp = datetime.now()
+
             if CONF_VOLUME_STEP in self._config and \
                self._volume_level is not None:
-                self._volume_level += self._config.get(CONF_VOLUME_STEP)
+                self._volume_level += self._volume_step
 
     async def async_volume_down(self):
         """Volume down media player."""
         async with self._lock:
-            await self.send(self._config.get(CONF_VOLUME_DOWN))
+            code = self._config.get(CONF_VOLUME_DOWN)
+            if await self._volume_timeout():
+                await self.send(code)
+
+            await self.send(code)
+            self._volume_timestamp = datetime.now()
+
             if CONF_VOLUME_STEP in self._config and \
                self._volume_level is not None:
-                self._volume_level -= self._config.get(CONF_VOLUME_STEP)
+                self._volume_level -= self._volume_step
 
     async def async_mute_volume(self, mute):
         """Send mute command."""
@@ -295,38 +338,66 @@ class BroadlinkRM(MediaPlayerDevice):
 
     async def async_set_volume_level(self, volume):
         """Set volume level, range 0..1."""
-        if CONF_VOLUME_LEVELS not in self._config:
+        if CONF_VOLUME_SET not in self._config:
             raise NotImplementedError()
 
+        config = self._config[CONF_VOLUME_SET]
+
         async with self._lock:
-            base_level = self._volume_level
-            base_code = None
 
-            for level, code in self._config[CONF_VOLUME_LEVELS].items():
-                if base_level is None or \
-                   abs(base_level - volume) > abs(level - volume):
-                    base_level = level
-                    base_code = code
+            def items():
+                if self._volume_level:
+                    yield self._volume_level, None
+                yield from self._volume_levels.items()
 
-            volume_step = self._config.get(CONF_VOLUME_STEP)
-            delay = self._config.get(CONF_DIGITDELAY)
+            base_level, base_code = min(
+                items(),
+                key=lambda kv: abs(volume - kv[0]))
 
-            steps = int(round((volume - base_level) / volume_step))
-            if volume > base_level:
+            steps = int(round((volume - base_level) / self._volume_step))
+            if steps > 0:
                 code = self._config.get(CONF_VOLUME_UP)
             else:
                 code = self._config.get(CONF_VOLUME_DOWN)
 
-            _LOGGER.debug('Volume base %f target %f steps %f',
-                          base_level, volume, steps)
+            target = base_level + self._volume_step * steps
+
+            _LOGGER.debug('Volume base %f(%f) target %f(%f) steps %f',
+                          base_level,
+                          convert_volume_to_device(config, base_level),
+                          target,
+                          convert_volume_to_device(config, target),
+                          steps)
 
             if base_code:
                 await self.send(base_code)
-            for step in range(abs(steps)):
-                await asyncio.sleep(delay)
+
+            if await self._volume_timeout() and steps:
                 await self.send(code)
 
-            self._volume_level = base_level + volume_step * steps
+            for step in range(abs(steps)):
+                await self.send(code)
+
+            self._volume_timestamp = datetime.now()
+            self._volume_level = target
+
+    async def _volume_timeout(self):
+        if CONF_VOLUME_TIMEOUT not in self._config[CONF_VOLUME_SET]:
+            return False
+
+        timeout = self._config[CONF_VOLUME_SET][CONF_VOLUME_TIMEOUT]
+        delay = (datetime.now() - self._volume_timestamp).total_seconds()
+        remain = timeout - delay
+
+        _LOGGER.debug("Volume timeout remain %f", remain)
+        if remain > 0.0:
+            if remain < 0.5:
+                await asyncio.sleep(remain)
+                return True
+            else:
+                return False
+        else:
+            return True
 
     @property
     def media_content_type(self):
