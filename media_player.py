@@ -315,6 +315,7 @@ class BroadlinkRM(MediaPlayerDevice):
         async with self._lock:
             await self.send(self._config.get(CONF_SOURCES)[source])
             self._source = source
+            self._sound_mode = None
 
     async def async_select_sound_mode(self, sound_mode):
         """Select a specific source."""
