@@ -57,6 +57,9 @@ CONF_VOLUME_MAX = 'max'
 CONF_VOLUME_MIN = 'min'
 CONF_VOLUME_SET = 'volume_set'
 CONF_VOLUME_TIMEOUT = 'timeout'
+CONF_VOLUME_RESTORE = 'restore'
+CONF_CODE = 'code'
+CONF_DELAY = 'delay'
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -72,30 +75,51 @@ def convert_list_to_hex(data):
     return res
 
 
-CODE_SCHEMA = vol.Schema(vol.Any(
-    vol.All(
-        list,
-        convert_list_to_hex,
-    ),
-    cv.string,
-))
+def convert_code_to_command(data):
+    return {
+        CONF_CODE: data,
+        CONF_DELAY: None
+    }
+
+
+CODE_SCHEMA = vol.Schema(
+    vol.Any(
+        vol.All(
+            list,
+            convert_list_to_hex,
+        ),
+        cv.string
+    )
+)
+
+COMMAND_SCHEMA = vol.Schema(
+    vol.Any(
+        {vol.Required(CONF_CODE): CODE_SCHEMA,
+         vol.Optional(CONF_DELAY, default=0.0): float},
+        vol.All(
+            CODE_SCHEMA,
+            convert_code_to_command
+        )
+    )
+)
 
 DIGITS_SCHEMA = vol.Schema({
-    vol.Required('0'): CODE_SCHEMA,
-    vol.Required('1'): CODE_SCHEMA,
-    vol.Required('2'): CODE_SCHEMA,
-    vol.Required('3'): CODE_SCHEMA,
-    vol.Required('4'): CODE_SCHEMA,
-    vol.Required('5'): CODE_SCHEMA,
-    vol.Required('6'): CODE_SCHEMA,
-    vol.Required('7'): CODE_SCHEMA,
-    vol.Required('8'): CODE_SCHEMA,
-    vol.Required('9'): CODE_SCHEMA,
+    vol.Required('0'): COMMAND_SCHEMA,
+    vol.Required('1'): COMMAND_SCHEMA,
+    vol.Required('2'): COMMAND_SCHEMA,
+    vol.Required('3'): COMMAND_SCHEMA,
+    vol.Required('4'): COMMAND_SCHEMA,
+    vol.Required('5'): COMMAND_SCHEMA,
+    vol.Required('6'): COMMAND_SCHEMA,
+    vol.Required('7'): COMMAND_SCHEMA,
+    vol.Required('8'): COMMAND_SCHEMA,
+    vol.Required('9'): COMMAND_SCHEMA,
 })
 
-ENTRY_SCHEMA = vol.Schema({str: CODE_SCHEMA})
-VOLUME_LEVELS_SCHEMA = vol.Schema({float: CODE_SCHEMA})
+ENTRY_SCHEMA = vol.Schema({str: COMMAND_SCHEMA})
+VOLUME_LEVELS_SCHEMA = vol.Schema({float: COMMAND_SCHEMA})
 VOLUME_SCHEMA_SET = vol.Schema({
+    vol.Optional(CONF_VOLUME_RESTORE): float,
     vol.Required(CONF_VOLUME_MAX): float,
     vol.Required(CONF_VOLUME_MIN): float,
     vol.Required(CONF_VOLUME_LEVELS): VOLUME_LEVELS_SCHEMA,
@@ -110,16 +134,16 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     vol.Optional(CONF_TIMEOUT, default=DEFAULT_TIMEOUT): cv.positive_int,
 
-    vol.Optional(CONF_COMMAND_ON): CODE_SCHEMA,
-    vol.Optional(CONF_COMMAND_OFF): CODE_SCHEMA,
+    vol.Optional(CONF_COMMAND_ON): COMMAND_SCHEMA,
+    vol.Optional(CONF_COMMAND_OFF): COMMAND_SCHEMA,
     vol.Optional(CONF_VOLUME_SET): VOLUME_SCHEMA_SET,
-    vol.Optional(CONF_VOLUME_UP): CODE_SCHEMA,
-    vol.Optional(CONF_VOLUME_DOWN): CODE_SCHEMA,
-    vol.Optional(CONF_VOLUME_MUTE): CODE_SCHEMA,
-    vol.Optional(CONF_VOLUME_MUTE_ON): CODE_SCHEMA,
-    vol.Optional(CONF_VOLUME_MUTE_OFF): CODE_SCHEMA,
-    vol.Optional(CONF_NEXT_TRACK): CODE_SCHEMA,
-    vol.Optional(CONF_PREVIOUS_TRACK): CODE_SCHEMA,
+    vol.Optional(CONF_VOLUME_UP): COMMAND_SCHEMA,
+    vol.Optional(CONF_VOLUME_DOWN): COMMAND_SCHEMA,
+    vol.Optional(CONF_VOLUME_MUTE): COMMAND_SCHEMA,
+    vol.Optional(CONF_VOLUME_MUTE_ON): COMMAND_SCHEMA,
+    vol.Optional(CONF_VOLUME_MUTE_OFF): COMMAND_SCHEMA,
+    vol.Optional(CONF_NEXT_TRACK): COMMAND_SCHEMA,
+    vol.Optional(CONF_PREVIOUS_TRACK): COMMAND_SCHEMA,
     vol.Optional(CONF_SOURCES, default={}): ENTRY_SCHEMA,
     vol.Optional(CONF_SOUND_MODES, default={}): ENTRY_SCHEMA,
     vol.Optional(CONF_DIGITS): DIGITS_SCHEMA,
@@ -215,6 +239,9 @@ class BroadlinkRM(MediaPlayerDevice):
         self._lock = asyncio.Lock()
         self._volume_timestamp = datetime.now() + timedelta(seconds=-100)
         self._volume_calls = 0
+        self._volume_step = None
+        self._volume_levels = None
+        self._volume_restore = None
 
         if CONF_VOLUME_SET in config:
             volume_set = config[CONF_VOLUME_SET]
@@ -228,14 +255,21 @@ class BroadlinkRM(MediaPlayerDevice):
             }
             _LOGGER.debug("Converted step %f, volumes: %s",
                           self._volume_step, self._volume_levels)
+            if CONF_VOLUME_RESTORE in volume_set:
+                self._volume_restore = (
+                    (volume_set[CONF_VOLUME_RESTORE] - offset) / scale
+                )
 
     async def send(self, command):
         """Send b64 encoded command to device."""
         if command is None:
             raise Exception('No command defined!')
 
-        packet = b64decode(command)
+        packet = b64decode(command[CONF_CODE])
         await self.hass.async_add_job(self._link.send_data, packet)
+
+        if command[CONF_DELAY]:
+            await asyncio.sleep(command[CONF_DELAY])
 
     async def send_volume(self, code):
         if await self._volume_timeout():
@@ -263,6 +297,9 @@ class BroadlinkRM(MediaPlayerDevice):
         async with self._lock:
             await self.send(self._config.get(CONF_COMMAND_ON))
             self._state = STATE_ON
+
+        if self._volume_restore:
+            await self.async_set_volume_level(self._volume_restore)
 
     async def async_turn_off(self):
         """Turn off media player."""

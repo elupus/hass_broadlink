@@ -45,7 +45,10 @@ Example Configuration
         mac: '00:00:00:00:00:00'
         name: 'Yamaha RXV1400'
 
-        command_on: [nec1, 122, -1, 29]
+        command_on:
+          code: [nec1, 122, -1, 29]
+          delay: 2.0 # Delay until next command is accepted
+
         command_off: [nec1, 122, -1, 30]
 
         volume_up: [nec1, 122, -1, 26]
@@ -60,6 +63,9 @@ Example Configuration
         # To support volume control by sliders, your media_player must be able to change to a fixed volume
         # with an ir code. For example using some type of state restore.
         volume_set:
+          # Volume to restore device to when turned on, to know state
+          restore: -40
+
           # If player only display volume on first button press. Configure this value
           # to the number of seconds this volume activation remains in effect
           timeout: 3.0
