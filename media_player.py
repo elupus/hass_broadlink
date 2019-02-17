@@ -378,6 +378,7 @@ class BroadlinkRM(MediaPlayerDevice):
 
             if base_code:
                 await self.send(base_code)
+                self._volume_timestamp = datetime.now()
 
             for step in range(abs(steps)):
                 await self.send_volume(code)
