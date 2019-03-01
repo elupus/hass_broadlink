@@ -370,7 +370,6 @@ class BroadlinkRM(MediaPlayerDevice):
         async with self._lock:
             for digit in media_id:
                 await self.send(self._config.get(CONF_DIGITS).get(digit))
-                await asyncio.sleep(self._config.get(CONF_DIGITDELAY))
 
     async def async_set_volume_level(self, volume):
         """Set volume level, range 0..1."""
